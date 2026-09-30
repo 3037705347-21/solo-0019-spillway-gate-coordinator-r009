@@ -111,7 +111,7 @@ func (m *MemoryRepository) ReviewCommand(
 		if err := nextGate.Reserve(nextCommand.ID, now); err != nil {
 			return domain.GateCommand{}, domain.Gate{}, err
 		}
-		if err := registerExecutionGrant(grant); err != nil {
+		if err := bindExecutionGrant(&grant, nextCommand.ID, nextGate.ID); err != nil {
 			return domain.GateCommand{}, domain.Gate{}, err
 		}
 	}
@@ -180,7 +180,7 @@ func (m *MemoryRepository) ExecuteCommand(
 		}
 	}
 
-	if err := m.consumeExecutionGrants(now); err != nil {
+	if err := m.consumeExecutionGrant(grant.ID, now); err != nil {
 		return domain.GateCommand{}, domain.Gate{}, err
 	}
 	m.commands[nextCommand.ID] = nextCommand
@@ -188,9 +188,23 @@ func (m *MemoryRepository) ExecuteCommand(
 	return cloneCommand(nextCommand), nextGate, nil
 }
 
-func registerExecutionGrant(grant domain.ExecutionGrant) error {
-	if strings.TrimSpace(grant.ID) == "" {
-		return domain.Invalid("invalid_execution_grant", "execution grant id is required")
+// bindExecutionGrant pins a freshly issued grant to the command and gate it
+// authorizes. A grant can never be created for a different pair than the one
+// the clear review is committing.
+func bindExecutionGrant(grant *domain.ExecutionGrant, commandID, gateID string) error {
+	if grant == nil {
+		return domain.Internal("invalid_execution_grant", "execution grant is required")
+	}
+	commandID = strings.TrimSpace(commandID)
+	gateID = strings.TrimSpace(gateID)
+	if commandID == "" || gateID == "" {
+		return domain.Internal("invalid_execution_grant", "execution grant binding is incomplete")
+	}
+	if strings.TrimSpace(grant.CommandID) != commandID || strings.TrimSpace(grant.GateID) != gateID {
+		return domain.Conflict(
+			"execution_grant_binding_mismatch",
+			"execution grant cannot authorize a different command or gate",
+		)
 	}
 	if strings.TrimSpace(grant.Token) == "" {
 		return domain.Invalid("invalid_execution_grant", "execution grant token is required")
@@ -217,16 +231,22 @@ func (m *MemoryRepository) executionGrant(token string) (domain.ExecutionGrant, 
 	)
 }
 
-func (m *MemoryRepository) consumeExecutionGrants(now time.Time) error {
-	for grantID, grant := range m.grants {
-		if !grant.IsActive() {
-			continue
-		}
-		if err := grant.Consume(now); err != nil {
-			return err
-		}
-		m.grants[grantID] = grant
+// consumeExecutionGrant consumes the single grant that authorized the
+// current execution. Other active grants are left untouched: a credential is
+// invalidated only for the command and gate it was issued for, and only once
+// that command reaches a terminal state.
+func (m *MemoryRepository) consumeExecutionGrant(grantID string, now time.Time) error {
+	grant, exists := m.grants[grantID]
+	if !exists {
+		return domain.Conflict(
+			"execution_grant_not_found",
+			"execution grant is no longer available",
+		)
 	}
+	if err := grant.Consume(now); err != nil {
+		return err
+	}
+	m.grants[grantID] = grant
 	return nil
 }
 

@@ -89,6 +89,9 @@ func (g ExecutionGrant) Matches(commandID, gateID, token string) bool {
 	if commandID == "" || gateID == "" {
 		return false
 	}
+	if strings.TrimSpace(g.CommandID) != commandID || strings.TrimSpace(g.GateID) != gateID {
+		return false
+	}
 	if token == "" || token != strings.TrimSpace(g.Token) {
 		return false
 	}
