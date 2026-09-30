@@ -59,6 +59,11 @@ func (s *Service) ReviewInterlock(
 		return domain.GateCommand{}, domain.Gate{}, err
 	}
 
+	command, err := s.repository.Command(ctx, commandID)
+	if err != nil {
+		return domain.GateCommand{}, domain.Gate{}, err
+	}
+
 	grant := domain.ExecutionGrant{}
 	if decision.IsClear() {
 		token, err := s.newToken()
@@ -68,7 +73,7 @@ func (s *Service) ReviewInterlock(
 				"execution token could not be generated",
 			)
 		}
-		grant, err = s.newExecutionGrant(commandID, request.Verifier, token)
+		grant, err = s.newExecutionGrant(commandID, command.GateID, token)
 		if err != nil {
 			return domain.GateCommand{}, domain.Gate{}, err
 		}

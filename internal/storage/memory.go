@@ -108,10 +108,10 @@ func (m *MemoryRepository) ReviewCommand(
 
 	nextGate := gate
 	if decision.IsClear() {
-		if err := nextGate.Reserve(nextCommand.ID, now); err != nil {
+		if err := registerExecutionGrant(grant, nextCommand.ID, nextGate.ID); err != nil {
 			return domain.GateCommand{}, domain.Gate{}, err
 		}
-		if err := registerExecutionGrant(grant); err != nil {
+		if err := nextGate.Reserve(nextCommand.ID, now); err != nil {
 			return domain.GateCommand{}, domain.Gate{}, err
 		}
 	}
@@ -156,7 +156,7 @@ func (m *MemoryRepository) ExecuteCommand(
 			"execution grant does not authorize this command",
 		)
 	}
-	if err := nextCommand.BeginExecution(nextCommand.ExecutionToken, operator, now); err != nil {
+	if err := nextCommand.BeginExecution(token, operator, now); err != nil {
 		return domain.GateCommand{}, domain.Gate{}, err
 	}
 
@@ -180,7 +180,7 @@ func (m *MemoryRepository) ExecuteCommand(
 		}
 	}
 
-	if err := m.consumeExecutionGrants(now); err != nil {
+	if err := m.consumeExecutionGrant(grant.ID, now); err != nil {
 		return domain.GateCommand{}, domain.Gate{}, err
 	}
 	m.commands[nextCommand.ID] = nextCommand
@@ -188,12 +188,24 @@ func (m *MemoryRepository) ExecuteCommand(
 	return cloneCommand(nextCommand), nextGate, nil
 }
 
-func registerExecutionGrant(grant domain.ExecutionGrant) error {
+func registerExecutionGrant(grant domain.ExecutionGrant, commandID, gateID string) error {
 	if strings.TrimSpace(grant.ID) == "" {
 		return domain.Invalid("invalid_execution_grant", "execution grant id is required")
 	}
 	if strings.TrimSpace(grant.Token) == "" {
 		return domain.Invalid("invalid_execution_grant", "execution grant token is required")
+	}
+	if strings.TrimSpace(grant.CommandID) == "" || grant.CommandID != strings.TrimSpace(commandID) {
+		return domain.Conflict(
+			"execution_grant_command_mismatch",
+			"execution grant must be bound to the reviewed command",
+		)
+	}
+	if strings.TrimSpace(grant.GateID) == "" || grant.GateID != strings.TrimSpace(gateID) {
+		return domain.Conflict(
+			"execution_grant_gate_mismatch",
+			"execution grant must be bound to the command gate",
+		)
 	}
 	return nil
 }
@@ -217,16 +229,18 @@ func (m *MemoryRepository) executionGrant(token string) (domain.ExecutionGrant, 
 	)
 }
 
-func (m *MemoryRepository) consumeExecutionGrants(now time.Time) error {
-	for grantID, grant := range m.grants {
-		if !grant.IsActive() {
-			continue
-		}
-		if err := grant.Consume(now); err != nil {
-			return err
-		}
-		m.grants[grantID] = grant
+func (m *MemoryRepository) consumeExecutionGrant(grantID string, now time.Time) error {
+	grant, exists := m.grants[grantID]
+	if !exists {
+		return domain.Conflict("invalid_execution_grant", "execution grant is not registered")
 	}
+	if !grant.IsActive() {
+		return domain.Conflict("execution_grant_consumed", "execution grant has already been consumed")
+	}
+	if err := grant.Consume(now); err != nil {
+		return err
+	}
+	m.grants[grantID] = grant
 	return nil
 }
 
